@@ -1,22 +1,69 @@
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
-import traceback
+import pickle
 
+# Model
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Store chunks + metadata
+# Globals
 documents = []
 index = None
 
+# Files
+INDEX_FILE = "faiss_index.bin"
+DOC_FILE = "documents.pkl"
 
-def chunk_text(text, chunk_size=500):
+
+# -----------------------------
+# SAVE / LOAD
+# -----------------------------
+def save_index():
+    global index, documents
+
+    if index is not None:
+        faiss.write_index(index, INDEX_FILE)
+
+        with open(DOC_FILE, "wb") as f:
+            pickle.dump(documents, f)
+
+        print("✅ Index saved")
+
+
+def load_index():
+    global index, documents
+
+    try:
+        index = faiss.read_index(INDEX_FILE)
+
+        with open(DOC_FILE, "rb") as f:
+            documents = pickle.load(f)
+
+        print("✅ Index loaded")
+        return True
+
+    except:
+        print("❌ No saved index found")
+        return False
+
+
+# -----------------------------
+# TEXT CHUNKING
+# -----------------------------
+def chunk_text(text, chunk_size=800, overlap=100):
+    if not text:
+        return []
+
     chunks = []
-    for i in range(0, len(text), chunk_size):
-        chunks.append(text[i:i+chunk_size])
+    for i in range(0, len(text), chunk_size - overlap):
+        chunks.append(text[i:i + chunk_size])
+
     return chunks
 
 
+# -----------------------------
+# BUILD INDEX
+# -----------------------------
 def build_index(all_contracts):
     global index, documents
 
@@ -24,7 +71,15 @@ def build_index(all_contracts):
     embeddings = []
 
     for contract_id, text in all_contracts:
+        print("Processing contract:", contract_id)
+
+        if not text or text.strip() == "":
+            print("Skipping empty text")
+            continue
+
         chunks = chunk_text(text)
+
+        print("Chunks created:", len(chunks))
 
         for chunk in chunks:
             documents.append({
@@ -33,37 +88,37 @@ def build_index(all_contracts):
             })
             embeddings.append(model.encode(chunk))
 
+    # 🚨 Critical safety check BEFORE conversion
+    if len(embeddings) == 0:
+        print("❌ No embeddings created. Check your data.")
+        index = None
+        return
+
     embeddings = np.array(embeddings).astype('float32')
 
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
 
+    print("✅ Index built with", len(documents), "chunks")
 
+
+# -----------------------------
+# SEARCH
+# -----------------------------
 def search(query, k=3):
     global index, documents
 
     if index is None:
-        print("❌ Index not built yet")
+        print("❌ Index not built")
         return []
-    
-    print("Query from user =",query)
 
     query_embedding = model.encode([query]).astype('float32')
-
-    print("Query Embedding=", query_embedding)
 
     distances, indices = index.search(query_embedding, k)
 
     results = []
     for idx in indices[0]:
-        try:
-            if idx < len(documents):
-                results.append(documents[idx])
-        except Exception as e:
-            print("An exception occurred, here is the stack trace:")
-            traceback.print_exc() 
-        
-
-    print("Results = ", results)            
+        if idx < len(documents):
+            results.append(documents[idx])
 
     return results
